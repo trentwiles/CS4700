@@ -6,6 +6,7 @@ import json
 import sys
 import argparse
 import requests
+import random
 
 # constants (all caps in python!!!)
 ENDLINE = "\n"
@@ -14,23 +15,28 @@ DEFAULT_PORT = 27993
 DEFAULT_TLS_PORT = 27994
 WORD_LIST_URL = "https://4700.network/projects/project1-words.txt"
 
+
 # grab the word list from remote, per spec
 def load_word_list():
     try:
         response = requests.get(WORD_LIST_URL, headers={"user-agent": "trent"})
-        response.raise_for_status() # kill if bad http status but unlikely
-        
+        response.raise_for_status()  # kill if bad http status but unlikely
+
         # convert wordlist to a python list, filter junk
-        return [word.strip().lower() for word in response.text.split('\n') if word.strip()]
+        return [
+            word.strip().lower() for word in response.text.split("\n") if word.strip()
+        ]
     except:
         raise ValueError("cuoldn't grab the wordlist")
+
 
 # python string to UTF + newline at the end
 def send_json(sock, msg):
     message = json.dumps(msg) + ENDLINE
     sock.sendall(message.encode("utf-8"))
 
-# parse a 
+
+# parse JSON response from socket, kill program if non-json response (there shouldn't be)
 def recv_json(sock_file):
     line = sock_file.readline()
     if not line:
@@ -40,201 +46,203 @@ def recv_json(sock_file):
     except:
         raise ValueError("unable to parse JSON, try again later")
 
-# wordle algorithm
-# NOTE TO SELF: CLEAN THIS UP
-def analyze_marks(guesses):
-    # "confirmed letters" = 2, the letter IS in that exact position
-    # "misplaced letters" = 1, the letter IS in the word, however it MAY not be in the exact position
-    # "junk letters" = 0, they aren't in the word, and we should filter out words with them
-    
-    conf_letters = {} # word and it's respective location, in dict format!
-    misplaced_letters = set() 
-    junk_letters = set()
-    
-    for guess_info in guesses:
-        word = guess_info["word"]
-        marks = guess_info["marks"]
-        
-        for i, (letter, mark) in enumerate(zip(word, marks)):
-            # correct possition: add to misplaced words AND confirmed words
-            if mark == 2:
-                conf_letters[i] = letter
-                misplaced_letters.add(letter)
-            # wrong position: 
-            elif mark == 1:  # Wrong position but in word
-                misplaced_letters.add(letter)
-            elif mark == 0:  # Not in word
-                junk_letters.add(letter)
-    
-    return conf_letters, misplaced_letters, junk_letters
 
-def filter_candidates(word_list, conf_letters, misplaced_letters, junk_letters, previous_guesses):
-    """Filter word list based on what we know so far."""
+# based on the "marks" given to us by the server for the previous word, we can eliminate a future word
+def is_valid_candidate(candidate, guessed_word, marks):
+
+    correct_positions = {}  # position -> letter (mark = 2)
+    required_letters = (
+        set()
+    )  # letters that must be in the word (mark = 1), don't care about position so a set is used
+    forbidden_letters = set()  # letters that aren't in the word (mark = 0), """"
+    wrong_positions = {}  # letter -> list of positions it can't be in (mark = 1)
+
+    # map guessed letters to marks via zip func
+    for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
+        # lettrs that are required
+        if mark == 2:
+            correct_positions[i] = letter
+            required_letters.add(letter)
+        # right letter, wrong position
+        elif mark == 1:
+            required_letters.add(letter)
+            if letter not in wrong_positions:
+                wrong_positions[letter] = []
+            wrong_positions[letter].append(i)
+        # word doesn't contain the letter,
+        # add to forbidden letters list if no redundancy in the required_letters set
+        elif mark == 0:
+            if letter not in required_letters:
+                forbidden_letters.add(letter)
+
+    # 1. drop if a required letter is in wrong position
+    for pos, letter in correct_positions.items():
+        if candidate[pos] != letter:
+            return False
+
+    # 2. drop if word is missing any required letters
+    for letter in required_letters:
+        if letter not in candidate:
+            return False
+
+    # 3. ensure banned/forbidden letters are NOT in the word
+    for letter in forbidden_letters:
+        if letter in candidate:
+            return False
+
+    # 4. ensure that a letter in the wrong position previously still isn't in that wrong position
+    # ie. if 'a' is in slot 3, with a 1, then it can't be in slot 3 again
+    for letter, bad_positions in wrong_positions.items():
+        for pos in bad_positions:
+            if candidate[pos] == letter:
+                return False
+
+    # passed all the above checks? it MIGHT be the word we want
+    return True
+
+
+# clean out the word list after each guess
+def filter_candidates(word_list, guesses):
     candidates = []
-    guessed_words = {guess["word"] for guess in previous_guesses}
-    
+    guessed_words = set()
+
+    for guess in guesses:
+        guessed_words.add(guess["word"])
+
     for word in word_list:
+        # bypass previously guessed words
         if word in guessed_words:
             continue
-            
-        # Skip if word contains impossible letters
-        if any(letter in junk_letters for letter in word):
-            continue
-            
-        # Skip if word doesn't have confirmed letters in right positions
-        valid = True
-        for pos, letter in conf_letters.items():
-            if word[pos] != letter:
-                valid = False
+
+        # for each word in the word list, validate, then if validated, add to the list of candidates
+        is_valid = True
+        for guess_data in guesses:
+            if not is_valid_candidate(word, guess_data["word"], guess_data["marks"]):
+                is_valid = False
                 break
-        
-        if not valid:
-            continue
-            
-        # Skip if word doesn't contain all possible letters
-        if not all(letter in word for letter in misplaced_letters):
-            continue
-            
-        # Additional check: letters marked as 1 shouldn't be in their guessed positions
-        valid_positions = True
-        for guess_info in previous_guesses:
-            guess_word = guess_info["word"]
-            marks = guess_info["marks"]
-            for i, (letter, mark) in enumerate(zip(guess_word, marks)):
-                if mark == 1 and word[i] == letter:  # Wrong position constraint
-                    valid_positions = False
-                    break
-            if not valid_positions:
-                break
-                
-        if valid_positions:
+
+        if is_valid:
             candidates.append(word)
-    
+
     return candidates
 
+
 def choose_next_guess(word_list, guesses):
-    """Choose the next word to guess based on previous results."""
     if not guesses:
-        # First guess - use a word with common vowels and consonants
-        return "adieu"
-    
-    # Analyze what we know
-    conf_letters, misplaced_letters, junk_letters = analyze_marks(guesses)
-    
-    # Filter candidates
-    candidates = filter_candidates(word_list, conf_letters, misplaced_letters, junk_letters, guesses)
-    
-    if candidates:
-        return candidates[0]  # Return first valid candidate
-    else:
-        # Fallback: find any word not yet guessed
-        guessed_words = {guess["word"] for guess in guesses}
-        for word in word_list:
-            if word not in guessed_words:
-                return word
-        
-        # If somehow all words are exhausted, return the first one
-        return word_list[0]
+        # no guesses? find a random word from the word list and don't fitler the list
+        return word_list[random.randint(0, len(word_list) - 2)]
+
+    candidates = filter_candidates(word_list, guesses)
+
+    # use a random candidate
+    return candidates[random.randint(0, len(candidates) - 1)]
+
 
 def play_game(sock, sock_file, username, word_list):
-
     # send hello to grab ID
     hello_msg = {"type": "hello", "northeastern_username": username}
     send_json(sock, hello_msg)
-    
-    # Receive start message
+
+    # get start message
     response = recv_json(sock_file)
     if response.get("type") == "error":
-        raise ValueError(f"Rmote server error: {response.get('message', 'Unknown error')}")
-    
+        raise ValueError(f"Websocket error: {response.get('message', 'Unknown error')}")
+
     if response.get("type") != "start":
         raise ValueError(f"Expected 'start' message, got: {response}")
-    
+
     game_id = response["id"]
-    
+
     # 500 guesses until we get kicked according to the docs
-    # included so we don't get force kicked from the server
     guess_count = 0
     max_guesses = 500
-    
+
     while guess_count < max_guesses:
-        # first guess? pass a blank list to represent no guesses
-        # otherwise, just use the list of guesses reflected from websocket
         if guess_count == 0:
             next_guess = choose_next_guess(word_list, [])
         else:
+            # server stores the previous guesses for us in the returned JSON, so we don't even need to store them in a variable
             next_guess = choose_next_guess(word_list, response.get("guesses", []))
-        
+
+        # print(f"Guess {guess_count + 1}: {next_guess}")
+        # ^ uncomment above for debug
+
         # make the guess
         guess_msg = {"type": "guess", "id": game_id, "word": next_guess}
         send_json(sock, guess_msg)
         guess_count += 1
-        
+
         # grab the response
         response = recv_json(sock_file)
-        
-        # three cases:
-        # 1. error, kill the program
+
         if response.get("type") == "error":
-            raise ValueError(f"Server error: {response.get('message', 'Unknown error')}")
-        # 2. it's correct, return the flag
+            error_msg = response.get("message", "Unknown error")
+            raise ValueError(f"Server error: {error_msg}")
         elif response.get("type") == "bye":
+            # bingo, we found the correct one
             return response["flag"]
-        # 3. wrong guess, let's try again...
         elif response.get("type") == "retry":
+            # if response.get("guesses"):
+            #     remaining = filter_candidates(word_list, response["guesses"])
+            # print(f"Candidates remaining: {len(remaining)}")
+            # ^ uncomment above for debug
+
             continue
-        # 4. unexpected response type, throw an error for further inspection
         else:
             raise ValueError(f"Unexpected response type: {response.get('type')}")
-    
-    raise ValueError("Exceeded maximum number of guesses (500)")
+
+    raise ValueError("maximum number of guesses (500) exceeded")
+    # future ^^^ add logic to reconnect once 500+ limit has been passed
+    # however I have never used more than 20 guesses
+
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Project One, CS 4700 (by Trent Wiles)")
+    parser = argparse.ArgumentParser(
+        description="Project #1, CS 4700 (Trent Wiles)"
+    )
     parser.add_argument("-p", "--port", type=int, help="Server port")
-    parser.add_argument("-s", "--tls", action="store_true", help="Use TLS encryption?")
+    parser.add_argument("-s", "--tls", action="store_true", help="Use TLS?")
     parser.add_argument("hostname", help="Server hostname")
-    parser.add_argument("username", help="myNortheastern username")
-    
+    parser.add_argument("username", help="NEU username")
+
     args = parser.parse_args()
-    
+
     # fallback to predefined default ports as specified in docs if user doesn't override
+    # defined in constants at top of file
     if args.port:
         port = args.port
     elif args.tls:
         port = DEFAULT_TLS_PORT
     else:
         port = DEFAULT_PORT
-    
+
     word_list = load_word_list()
-    
+
     try:
-        # learned how to do this from:
-        # https://realpython.com/python-sockets/
-        # https://docs.python.org/3/howto/sockets.html
-        # ^ pasted some "starter code" from sources above
-        
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        
+
         if args.tls:
             context = ssl.create_default_context()
             sock = context.wrap_socket(sock, server_hostname=args.hostname)
-        
-        # prof mentioned how sockets and file I/O have quite a few paralells
-        # python has a feature where you can treat a socket like a file
+
         sock.connect((args.hostname, port))
+        # sock_file allows us to treat the socket like the file I/O, just like prof noted in class
         sock_file = sock.makefile("r")
-        
+
         flag = play_game(sock, sock_file, args.username, word_list)
-        
+
         # only required output is printing the flag
         print(flag)
-        
+
     except Exception as e:
-        raise ValueError(f"error: {e}", str(sys.stderr))
+        print(f"error: {e}", file=sys.stderr)
     finally:
-        sock.close()
+        try:
+            sock.close()
+        except:
+            pass
+
 
 if __name__ == "__main__":
     main()
