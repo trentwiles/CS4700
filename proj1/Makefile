@@ -3,7 +3,7 @@
 .PHONY: install run clean
 
 install:
-	pip3 -m install requests
+	pip3 install requests
 
 run:
 	python3 client
