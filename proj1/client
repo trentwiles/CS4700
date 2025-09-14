@@ -45,59 +45,50 @@ def recv_json(sock_file):
     except:
         raise ValueError("unable to parse JSON, try again later")
 
-
-# based on the "marks" given to us by the server for the previous word, we can eliminate a future word
 def is_valid_candidate(candidate, guessed_word, marks):
-
-    correct_positions = {}  # position -> letter (mark = 2)
-    required_letters = (
-        set()
-    )  # letters that must be in the word (mark = 1), don't care about position so a set is used
-    forbidden_letters = set()  # letters that aren't in the word (mark = 0)
-    wrong_positions = {}  # letter -> list of positions it can't be in (mark = 1)
-
-    # map guessed letters to marks via zip func
-    # zip: https://realpython.com/python-zip-function/
+    # Count letters in the target word based on marks
+    target_letter_counts = {}
+    
+    # if letter is preent in correct position, increase frequency count by 1
     for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
-        # lettrs that are required
         if mark == 2:
-            correct_positions[i] = letter
-            required_letters.add(letter)
-        # right letter, wrong position
-        elif mark == 1:
-            required_letters.add(letter)
-            if letter not in wrong_positions:
-                wrong_positions[letter] = []
-            wrong_positions[letter].append(i)
-        # word doesn't contain the letter,
-        # add to forbidden letters list if no redundancy in the required_letters set
-        elif mark == 0:
-            if letter not in required_letters:
-                forbidden_letters.add(letter)
-
-    # 1. drop if a required letter is in wrong position
-    for pos, letter in correct_positions.items():
-        if candidate[pos] != letter:
-            return False
-
-    # 2. drop if word is missing any required letters
-    for letter in required_letters:
-        if letter not in candidate:
-            return False
-
-    # 3. ensure banned/forbidden letters are NOT in the word
+            target_letter_counts[letter] = target_letter_counts.get(letter, 0) + 1
+    
+    # if letter is present but in wrong position, still increase frequency count by 1
+    for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
+        if mark == 1:
+            target_letter_counts[letter] = target_letter_counts.get(letter, 0) + 1
+    
+    # add to forbidden letter "blocklist" if not letter isn't already in the target_letter dict
+    forbidden_letters = set()
+    for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
+        if mark == 0 and letter not in target_letter_counts:
+            forbidden_letters.add(letter)
+    
+    # validate the candidate
+    # forbidden letters
     for letter in forbidden_letters:
         if letter in candidate:
             return False
-
-    # 4. ensure that a letter in the wrong position previously still isn't in that wrong position
-    # ie. if 'a' is in slot 3, with a 1, then it can't be in slot 3 again
-    for letter, bad_positions in wrong_positions.items():
-        for pos in bad_positions:
-            if candidate[pos] == letter:
-                return False
-
-    # passed all the above checks? it MIGHT be the word we want
+    
+    # required letter counts
+    candidate_counts = {}
+    for letter in candidate:
+        candidate_counts[letter] = candidate_counts.get(letter, 0) + 1
+    
+    # verify that the candidate word has at least the required number of each letter
+    for letter, required_count in target_letter_counts.items():
+        if candidate_counts.get(letter, 0) < required_count:
+            return False
+    
+    # position constraints based on previous guess feedback from server
+    # zip/iteration -> https://www.w3schools.com/python/ref_func_zip.asp
+    for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
+        if mark == 2 and candidate[i] != letter:
+            return False
+        elif mark == 1 and candidate[i] == letter:
+            return False
+    
     return True
 
 
@@ -130,7 +121,9 @@ def filter_candidates(word_list, guesses):
 def choose_next_guess(word_list, guesses):
     if not guesses:
         # no guesses? find a random word from the word list and don't fitler the list
-        return word_list[random.randint(0, len(word_list) - 2)]
+        # some good "seed" words that have lots of vowels
+        starters = ["adieu", "audio", "arose", "raise", "slate"]
+        return starters[random.randint(0, len(starters) - 2)]
 
     candidates = filter_candidates(word_list, guesses)
 
