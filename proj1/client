@@ -15,7 +15,6 @@ DEFAULT_PORT = 27993
 DEFAULT_TLS_PORT = 27994
 WORD_LIST_URL = "https://4700.network/projects/project1-words.txt"
 
-
 # grab the word list from remote, per spec
 def load_word_list():
     try:
@@ -54,7 +53,7 @@ def is_valid_candidate(candidate, guessed_word, marks):
     required_letters = (
         set()
     )  # letters that must be in the word (mark = 1), don't care about position so a set is used
-    forbidden_letters = set()  # letters that aren't in the word (mark = 0), """"
+    forbidden_letters = set()  # letters that aren't in the word (mark = 0)
     wrong_positions = {}  # letter -> list of positions it can't be in (mark = 1)
 
     # map guessed letters to marks via zip func
