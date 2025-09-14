@@ -58,6 +58,7 @@ def is_valid_candidate(candidate, guessed_word, marks):
     wrong_positions = {}  # letter -> list of positions it can't be in (mark = 1)
 
     # map guessed letters to marks via zip func
+    # zip: https://realpython.com/python-zip-function/
     for i, (letter, mark) in enumerate(zip(guessed_word, marks)):
         # lettrs that are required
         if mark == 2:
@@ -135,6 +136,10 @@ def choose_next_guess(word_list, guesses):
     candidates = filter_candidates(word_list, guesses)
 
     # use a random candidate
+    if len(candidates) == 0:
+        # no candidates? fall back to random word
+        return word_list[random.randint(0, len(word_list) - 2)]
+    
     return candidates[random.randint(0, len(candidates) - 1)]
 
 
@@ -197,7 +202,7 @@ def play_game(sock, sock_file, username, word_list):
 
 
 def main():
-    # Parse command line arguments
+    # https://realpython.com/command-line-interfaces-python-argparse/
     parser = argparse.ArgumentParser(
         description="Project #1, CS 4700 (Trent Wiles)"
     )
