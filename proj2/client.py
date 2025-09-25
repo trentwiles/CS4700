@@ -177,7 +177,7 @@ def ftp_upload(control_sock, local_path, remote_path):
 
     # STOR = upload in FTP
     print(f"Uploading local file '{local_path}' to remote path '{remote}'")
-    control_sock.sendall(f"STOR {parseURL(remote_path)['path']}\r\n".encode())
+    control_sock.sendall(f"STOR {remote_path}\r\n".encode())
     resp = control_sock.recv(4096).decode()
     _, msg, success = parseServerResp(resp.strip())
     if not success:
