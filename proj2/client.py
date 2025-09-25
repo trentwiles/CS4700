@@ -4,6 +4,7 @@ import argparse
 from urllib.parse import urlparse
 import socket
 import re
+import os
 
 FTPENDCHAR = b"\r\n"
 
@@ -100,15 +101,120 @@ def ftp_ls(control_sock, path):
     # .decode() required!!! we can't print off a byte string
     return listing.decode()
 
+# determines which path is local and remote,
+# then based on this, what action should be taken (upload or download)
+# if the local path is first, we upload
+# if the local path is second, we upload
+# [local, remote, useUpload?]
+def manageLocalRemote(path1, path2):
+    if detectLocalPath(path1):
+        local = path1
+        remote = parseURL(path2)  # parse remote FTP URL
+        return local, remote, True
+    elif detectLocalPath(path2):
+        local = path2
+        remote = parseURL(path1)
+        return local, remote, False
+    else:
+        raise ValueError("must pass at least one local path to use cp/mv funcs")
+
+# true = string is local path
+# false = string is NOT local path
+def detectLocalPath(path:str) -> bool:
+    if path == None:
+        return False
+    return "ftp://" not in path
+
+# intake same as above, previously opened sock
+def ftp_download(control_sock, remote_path, local_path):
+    # enter passive via helper function from above
+    data_host, data_port = enterPassiveMode(control_sock)
+    data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    data_sock.connect((data_host, data_port))
+
+    # RETR = retrieve
+    print(remote_path + " <--- remote")
+    control_sock.sendall(f"RETR {remote_path}\r\n".encode())
+    resp = control_sock.recv(4096).decode()
+
+    # again code doesn't matter for our impl
+    _, msg, success = parseServerResp(resp.strip())
+    if not success:
+        data_sock.close()
+        raise ValueError(f"RETR (via ftp_download) failed: {msg}")
+
+    # similar to ls, we need to read the response in 4096b chunks
+    # (which is an file this time, rather than a directory listing respomnse)
+    
+    file_data = b""
+    while True:
+        chunk = data_sock.recv(4096)
+        if not chunk:
+            break
+        file_data += chunk
+
+    data_sock.close()
+
+    # Final control response
+    resp = control_sock.recv(4096).decode()
+    code, msg, success = parseServerResp(resp.strip())
+    if not success:
+        raise ValueError(f"RETR failed: {msg}")
+
+    # local save
+    with open(local_path, "wb") as f:
+        f.write(file_data)
+    
+    return code, msg
+
+def ftp_upload(control_sock, local_path, remote_path):
+    # passive via helper function
+    data_host, data_port = enterPassiveMode(control_sock)
+    data_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # also keep in mind host is just an ip/hostname, don't include the path here
+    # otherwise an error will occur!!!!!
+    data_sock.connect((data_host, data_port))
+
+    # STOR = upload in FTP
+    print(f"Uploading local file '{local_path}' to remote path '{remote}'")
+    control_sock.sendall(f"STOR {parseURL(remote_path)['path']}\r\n".encode())
+    resp = control_sock.recv(4096).decode()
+    _, msg, success = parseServerResp(resp.strip())
+    if not success:
+        data_sock.close()
+        raise ValueError(f"STOR failed... {msg}")
+
+    # Send file contents
+    with open(local_path, "rb") as f:
+        while chunk := f.read(4096):
+            data_sock.sendall(chunk)
+
+    data_sock.close()
+
+    # Final control response
+    resp = control_sock.recv(4096).decode()
+    code, msg, success = parseServerResp(resp.strip())
+    if not success:
+        raise ValueError(f"STOR failed: {msg}")
+    
+    return code, msg
 
 # access args above via args.operation
 # Valid operations are ls, mkdir, rm, rmdir, cp, and mv
+# prof: "mv is just cp with a delete"
 VALID_OPERATIONS = ["ls", "mkdir", "rm", "rmdir", "cp", "mv"]
 
 if args.operation not in VALID_OPERATIONS:
     raise ValueError("invalid command (insert verbose message here)")
 
-ftp_creds = parseURL(args.param1)
+# in the case of mv and cp, the remote server URL could be either arg1 or arg2
+try:
+    ftp_creds = parseURL(args.param1)
+except:
+    try:
+        ftp_creds = parseURL(args.param2)
+    except:
+        raise ValueError("unable to parse FTP url... neither arg1 nor arg2 are valid FTP server URLs")
 
 # if we've made it to this section, we know that there is a valid FTP url
 
@@ -141,6 +247,7 @@ if not parsedResp[2]:
 # LIST (directory listing), RETR (download), STOR (upload)
 
 if args.operation == "ls":
+    # call helper to open new socket
     dir_listing = ftp_ls(control_sock, ftp_creds['path'])
     print(dir_listing)
 elif args.operation == "mkdir":
@@ -160,5 +267,38 @@ elif args.operation == "rmdir":
     resp = control_sock.recv(4096).decode()
     parsedResp = parseServerResp(resp.strip())
     print(parsedResp)
+elif args.operation == "cp":
+    local, remote, shouldUpload = manageLocalRemote(args.param1, args.param2)
+    if shouldUpload:
+        ftp_upload(control_sock, local, remote['path'])
+    else:
+        ftp_download(control_sock, remote['path'], local)
+    # copy doesn't delete anything... we're done!
+
+elif args.operation == "mv":
+    local, remote, shouldUpload = manageLocalRemote(args.param1, args.param2)
+    if shouldUpload:
+        ftp_upload(control_sock, local, remote['path'])
+    else:
+        ftp_download(control_sock, remote['path'], local)    
+    # however, move does delete the original file
+    # if we're uploading, we delete local
+    # otherwise delete external
+    if shouldUpload:
+        # delete local
+        os.remove(local)
+    else:
+        # delete external
+        control_sock.sendall(f"DELE {remote}\r\n".encode())
+        resp = control_sock.recv(4096).decode()
+        parsedResp = parseServerResp(resp.strip())
+        print(parsedResp)
+
+
 else:
     print("you should never reach this")
+
+
+
+# SEND A QUIT COMMAND HERE
+# DO NOT FORGET TO DO THIS!!!!!!!!
