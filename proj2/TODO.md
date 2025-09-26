@@ -1,8 +1,0 @@
-# Todo for 9/25
-
-- [ ] ensure mv, cp work (test all combinations, local/remote & remote/local)
-- [ ] stress test ls, rm, rmdir, mkdir
-- [ ] at QUIT to make the server kill the socket
-- [x] clean up comments
-- [x] replace this readme with documentation
-- [x] create blank makefile (read comments from last project; consider just copying and pasting)

@@ -281,7 +281,6 @@ elif args.operation == "rm":
     control_sock.sendall(f"DELE {ftp_creds['path']}\r\n".encode())
     resp = control_sock.recv(4096).decode()
     parsedResp = parseServerResp(resp.strip())
-    print(str(parsedResp[0]) + " " + str(parsedResp[1]))
 elif args.operation == "rmdir":
     # raw socket sends RMD
     control_sock.sendall(f"RMD {ftp_creds['path']}\r\n".encode())
@@ -310,7 +309,7 @@ elif args.operation == "mv":
         os.remove(local)
     else:
         # delete external
-        control_sock.sendall(f"DELE {remote}\r\n".encode())
+        control_sock.sendall(f"DELE {remote['path']}\r\n".encode())
         resp = control_sock.recv(4096).decode()
         parsedResp = parseServerResp(resp.strip())
         print(str(parsedResp[0]) + " " + str(parsedResp[1]))
