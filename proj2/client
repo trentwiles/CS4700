@@ -233,18 +233,39 @@ code, message, success = parseServerResp(resp.strip())
 if not success:
     raise ValueError("error when passing username: " + str(code) + " " + str(message))
 
-# auth w/ password
-control_sock.sendall(f"PASS {ftp_creds['password']}\r\n".encode())
-resp = control_sock.recv(4096).decode()
-parsedResp = parseServerResp(resp.strip())
+if ftp_creds['password'] != None and ftp_creds['password'] != "":
+    # auth w/ password
+    control_sock.sendall(f"PASS {ftp_creds['password']}\r\n".encode())
+    resp = control_sock.recv(4096).decode()
+    parsedResp = parseServerResp(resp.strip())
 
-# we've sent the username and password, now check if it was a success
-if not parsedResp[2]:
-    raise ValueError(f"username / password combination ({ftp_creds['username'], ftp_creds['password']} invalid on host {ftp_creds['host']})")
+    # we've sent the username and password, now check if it was a success
+    if not parsedResp[2]:
+        raise ValueError(f"username / password combination ({ftp_creds['username'], ftp_creds['password']} invalid on host {ftp_creds['host']})")
 
 # password & username combo success by this point, we're authenticated
 # for reference, the following commands need PASV
 # LIST (directory listing), RETR (download), STOR (upload)
+
+# extra headers i need to send, per spec
+control_sock.sendall(b"TYPE I\r\n")
+resp = control_sock.recv(4096).decode()
+code, msg, success = parseServerResp(resp.strip())
+if not success:
+    raise ValueError(f"can't set TYPE I per spec: {msg}")
+
+control_sock.sendall(b"MODE S\r\n")
+resp = control_sock.recv(4096).decode()
+code, msg, success = parseServerResp(resp.strip())
+if not success:
+    raise ValueError(f"can't set MODE S per spec: {msg}")
+
+control_sock.sendall(b"STRU F\r\n")
+resp = control_sock.recv(4096).decode()
+code, msg, success = parseServerResp(resp.strip())
+if not success:
+    raise ValueError(f"can't set STRU F per spec {msg}")
+
 
 if args.operation == "ls":
     # call helper to open new socket
