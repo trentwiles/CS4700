@@ -11,12 +11,12 @@ FTPENDCHAR = b"\r\n"
 # ./4700ftp [operation] [param1] [param2]
 
 parser = argparse.ArgumentParser(description="CS4700 FTP Client")
-parser.add_argument("operation", help="FTP operation (think COPY)")
+parser.add_argument("operation", help="FTP operation (think mv, cp, ls, rm, rmdir)")
 parser.add_argument("param1", nargs="?", help="First parameter (optional)", default=None)
 parser.add_argument("param2", nargs="?", help="Second parameter (optional)", default=None)
 args = parser.parse_args()
 
-# helper functions
+# helper function wrapper for urllib
 def parseURL(ftp_string:str):
     parsed = urlparse(ftp_string)
 
@@ -71,7 +71,6 @@ def ftp_ls(control_sock, path):
     data_sock.connect((data_host, data_port))
 
     cmd = f"LIST {path}\r\n".encode()
-    print(cmd)
     control_sock.sendall(cmd)
 
     resp = control_sock.recv(4096).decode()
@@ -96,7 +95,6 @@ def ftp_ls(control_sock, path):
 
     # Receive final response from control socket
     resp = control_sock.recv(4096).decode()
-    print("Server:", resp.strip())
 
     # .decode() required!!! we can't print off a byte string
     return listing.decode()
@@ -155,7 +153,7 @@ def ftp_download(control_sock, remote_path, local_path):
 
     data_sock.close()
 
-    # Final control response
+    # ill the old socket, now grab the response from the first socke
     resp = control_sock.recv(4096).decode()
     code, msg, success = parseServerResp(resp.strip())
     if not success:
@@ -184,14 +182,14 @@ def ftp_upload(control_sock, local_path, remote_path):
         data_sock.close()
         raise ValueError(f"STOR failed... {msg}")
 
-    # Send file contents
+    # send the file contents in chunks through this second socket
     with open(local_path, "rb") as f:
         while chunk := f.read(4096):
             data_sock.sendall(chunk)
 
     data_sock.close()
 
-    # Final control response
+    # kill the old socket, now grab the response from the first socket
     resp = control_sock.recv(4096).decode()
     code, msg, success = parseServerResp(resp.strip())
     if not success:
@@ -223,17 +221,19 @@ control_sock.connect((ftp_creds['host'], ftp_creds['port']))
 
 # Receive the server's initial response
 resp = control_sock.recv(4096).decode()
-print("Server:", resp.strip())
 
 # if there's a failure for whatever reason kill
 if not parseServerResp(resp.strip())[2]:
     raise ValueError("Unable to connect to host on provided port, try again later??")
 
-# Send USER command
+# auth w/ username
 control_sock.sendall(f"USER {ftp_creds['username']}\r\n".encode())
 resp = control_sock.recv(4096).decode()
-print("Server:", resp.strip())
+code, message, success = parseServerResp(resp.strip())
+if not success:
+    raise ValueError("error when passing username: " + str(code) + " " + str(message))
 
+# auth w/ password
 control_sock.sendall(f"PASS {ftp_creds['password']}\r\n".encode())
 resp = control_sock.recv(4096).decode()
 parsedResp = parseServerResp(resp.strip())
@@ -254,19 +254,19 @@ elif args.operation == "mkdir":
     control_sock.sendall(f"MKD {ftp_creds['path']}\r\n".encode())
     resp = control_sock.recv(4096).decode()
     parsedResp = parseServerResp(resp.strip())
-    print(parsedResp)
+    print(str(parsedResp[0]) + " " + str(parsedResp[1]))
 elif args.operation == "rm":
     # raw socket sends DELE
     control_sock.sendall(f"DELE {ftp_creds['path']}\r\n".encode())
     resp = control_sock.recv(4096).decode()
     parsedResp = parseServerResp(resp.strip())
-    print(parsedResp)
+    print(str(parsedResp[0]) + " " + str(parsedResp[1]))
 elif args.operation == "rmdir":
     # raw socket sends RMD
     control_sock.sendall(f"RMD {ftp_creds['path']}\r\n".encode())
     resp = control_sock.recv(4096).decode()
     parsedResp = parseServerResp(resp.strip())
-    print(parsedResp)
+    print(str(parsedResp[0]) + " " + str(parsedResp[1]))
 elif args.operation == "cp":
     local, remote, shouldUpload = manageLocalRemote(args.param1, args.param2)
     if shouldUpload:
@@ -292,13 +292,16 @@ elif args.operation == "mv":
         control_sock.sendall(f"DELE {remote}\r\n".encode())
         resp = control_sock.recv(4096).decode()
         parsedResp = parseServerResp(resp.strip())
-        print(parsedResp)
-
+        print(str(parsedResp[0]) + " " + str(parsedResp[1]))
 
 else:
-    print("you should never reach this")
+    print("you should never reach this...")
 
 
 
 # SEND A QUIT COMMAND HERE
 # DO NOT FORGET TO DO THIS!!!!!!!!
+control_sock.sendall(f"QUIT\r\n".encode())
+resp = control_sock.recv(4096).decode()
+code, message, success = parseServerResp(resp.strip())
+print("Exiting... " + str(code) + " " + str(message))
